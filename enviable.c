@@ -47,10 +47,36 @@ static int (*real___libc_current_sigrtmin)(void) = NULL;
 
 static char *watchfile = "/tmp/vars";
 
+/* The following definitions are stolen from bash-4.2 */
+__attribute__((weak))
+extern int do_assignment_no_expand(char *);
+__attribute__((weak))
+extern void set_var_attribute(char *, int, int);
+#define att_exported 1
+
 int
 __libc_current_sigrtmin(void)
 {
 	return real___libc_current_sigrtmin() + 1;
+}
+
+static void
+enviable_setenv(char *line)
+{
+	char *eq = strchr(line, '=');
+	if (do_assignment_no_expand && set_var_attribute) {
+		/* We're running inside bash. Since bash maintains its
+		 * own idea of the environment (shell variables marked
+		 * exported), we need to go through that for child
+		 * processes to see changes. */
+		do_assignment_no_expand(line);
+		*eq = '\0';
+		set_var_attribute(line, att_exported, 0);
+	} else {
+		/* Unknown host process -- fall back to libc. */
+		*eq = '\0';
+		setenv(line, eq + 1, 1);
+	}
 }
 
 static void
@@ -64,21 +90,19 @@ enviable_callback(int signum, siginfo_t *si, void *context)
 	if (!fd) {
 		return;
 	}
-	char *buf = NULL;
+	char *line = NULL;
 	size_t n = 0;
 	ssize_t len;
-	while ((len = getline(&buf, &n, fd)) > 0) {
-		if (buf[len - 1] == '\n') {
-			buf[len - 1] = '\0';
+	while ((len = getline(&line, &n, fd)) > 0) {
+		if (line[len - 1] == '\n') {
+			line[len - 1] = '\0';
 		} else {
 			/* Conservatively reject partial lines. */
 			continue;
 		}
-		char *eq = strchr(buf, '=');
-		*eq = '\0';
-		setenv(buf, eq + 1, 1);
+		enviable_setenv(line);
 	}
-	free(buf);
+	free(line);
 	fclose(fd);
 }
 
